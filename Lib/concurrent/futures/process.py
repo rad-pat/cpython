@@ -80,18 +80,23 @@ _global_shutdown = False
 
 class _ThreadWakeup:
     def __init__(self):
+        self._closed = False
         self._reader, self._writer = mp.Pipe(duplex=False)
 
     def close(self):
-        self._writer.close()
-        self._reader.close()
+        if not self._closed:
+            self._closed = True
+            self._writer.close()
+            self._reader.close()
 
     def wakeup(self):
-        self._writer.send_bytes(b"")
+        if not self._closed:
+            self._writer.send_bytes(b"")
 
     def clear(self):
-        while self._reader.poll():
-            self._reader.recv_bytes()
+        if not self._closed:
+            while self._reader.poll():
+                self._reader.recv_bytes()
 
 
 def _python_exit():
@@ -339,6 +344,7 @@ def _queue_management_worker(executor_reference,
 
         # Release the queue's resources as soon as possible.
         call_queue.close()
+        thread_wakeup.close()
         # If .join() is not called on the created processes then
         # some ctx.Queue methods may deadlock on Mac OS X.
         for p in processes.values():
@@ -439,6 +445,7 @@ def _queue_management_worker(executor_reference,
                 # this thread if there are no pending work items.
                 if not pending_work_items:
                     shutdown_worker()
+                    thread_wakeup = None
                     return
             except Full:
                 # This is not a problem: we will eventually be woken up (in
@@ -672,15 +679,16 @@ class ProcessPoolExecutor(_base.Executor):
         # objects that use file descriptors.
         self._queue_management_thread = None
         if self._call_queue is not None:
-            self._call_queue.close()
             if wait:
+                self._call_queue.close()
                 self._call_queue.join_thread()
             self._call_queue = None
         self._result_queue = None
         self._processes = None
 
         if self._queue_management_thread_wakeup:
-            self._queue_management_thread_wakeup.close()
+            if wait:
+                self._queue_management_thread_wakeup.close()
             self._queue_management_thread_wakeup = None
 
     shutdown.__doc__ = _base.Executor.shutdown.__doc__
